@@ -126,6 +126,14 @@ app.post("/relay/heartbeat", (req,res) => {
     res.json({ ok:true, device: dev, via:"relayer" });
   }catch(e){ res.status(e.status||400).json({error:e.message}); }
 });
+app.get("/relay/devices/:deviceId", (req,res) => {
+  try{
+    checkSecret(req);
+    const dev = store.get(req.params.deviceId);
+    if (!dev) return res.status(404).json({error:"device not found"});
+    res.json({ device: dev });
+  }catch(e){ res.status(e.status||400).json({error:e.message}); }
+});
 app.get("/relay/devices", (req,res) => {
   try{
     checkSecret(req);
