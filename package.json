@@ -1,0 +1,14 @@
+{
+  "name": "relayer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch server.js",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "4.19.2",
+    "cors": "2.8.5"
+  }
+}
