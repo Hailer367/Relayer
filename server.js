@@ -32,6 +32,7 @@ app.use((req,res,next)=>{
 
 // ---- in-memory ephemeral store ----
 const store = new Map();
+const commands = new Map(); // deviceId -> {url, ts}
 const TTL_MS = 120_000;
 const MAX_DEVICES = 5000;
 const MAX_DEVICEID_LEN = 128;
@@ -42,7 +43,11 @@ const MAX_STR = 64;
 setInterval(() => {
   const now = Date.now();
   for (const [k,v] of store) {
-    if (now - new Date(v.lastSeen).getTime() > TTL_MS) store.delete(k);
+    if (now - new Date(v.lastSeen).getTime() > TTL_MS) { store.delete(k); commands.delete(k); }
+  }
+  // expire pending relay commands after 5 min
+  for (const [k,c] of commands) {
+    if (now - c.ts > 300_000) commands.delete(k);
   }
 }, 30_000);
 
@@ -123,7 +128,39 @@ app.post("/relay/heartbeat", (req,res) => {
   try{
     checkSecret(req);
     const dev = upsert(req.body, req.ip, req.get("user-agent"));
-    res.json({ ok:true, device: dev, via:"relayer" });
+    // piggyback pending relay command if any (peek, not delete — poll will consume)
+    const cmd = commands.get(dev.deviceId);
+    const out = { ok:true, device: dev, via:"relayer" };
+    if (cmd) out.command = { action:"relay", url: cmd.url, ts: cmd.ts };
+    res.json(out);
+  }catch(e){ res.status(e.status||400).json({error:e.message}); }
+});
+// Dashboard -> device: enqueue Relay command
+app.post("/relay/relay", (req,res) => {
+  try{
+    checkSecret(req);
+    let { deviceId, url } = req.body || {};
+    validateDeviceId(deviceId);
+    if (!url || typeof url !== "string") url = "https://spotify.com";
+    url = url.trim().slice(0,512);
+    if (!/^https?:\/\//.test(url)) throw new Error("url must be https://");
+    if (!store.has(deviceId)) return res.status(404).json({error:"device not found or offline"});
+    commands.set(deviceId, { url, ts: Date.now() });
+    console.log(`[relay] queued for ${deviceId.slice(0,12)} -> ${url}`);
+    res.json({ ok:true, queued:true, deviceId, url });
+  }catch(e){ res.status(e.status||400).json({error:e.message}); }
+});
+// Device polls for pending command (consumes)
+app.get("/relay/poll/:deviceId", (req,res) => {
+  try{
+    // device poll does not require secret (device has no secret); allow without check
+    // but if secret is set, also accept it
+    const id = req.params.deviceId;
+    validateDeviceId(id);
+    const cmd = commands.get(id);
+    if (!cmd) return res.json({ command: null });
+    commands.delete(id);
+    res.json({ command: { action:"relay", url: cmd.url, ts: cmd.ts } });
   }catch(e){ res.status(e.status||400).json({error:e.message}); }
 });
 app.get("/relay/devices/:deviceId", (req,res) => {
@@ -142,7 +179,7 @@ app.get("/relay/devices", (req,res) => {
   }catch(e){ res.status(e.status||400).json({error:e.message}); }
 });
 app.get("/relay/health", (req,res)=> res.json({ ok:true, count: store.size, tellerUrl: TELLER_URL, relayerUrl: RELAYER_URL, uptime: process.uptime(), maxDevices: MAX_DEVICES, ttlMs: TTL_MS }));
-app.get("/", (req,res)=> res.json({ name:"Relayer", tellerUrl: TELLER_URL, relayerUrl: RELAYER_URL, endpoints: ["/relay/register","/relay/heartbeat","/relay/devices","/relay/health"] }));
+app.get("/", (req,res)=> res.json({ name:"Relayer", tellerUrl: TELLER_URL, relayerUrl: RELAYER_URL, endpoints: ["/relay/register","/relay/heartbeat","/relay/devices","/relay/health","/relay/relay","/relay/poll/:deviceId"] }));
 app.use((req,res)=> res.status(404).json({error:"not found"}));
 
 app.listen(PORT, ()=> console.log(`Relayer fortified :${PORT}  TELLER=${TELLER_URL}  RELAYER=${RELAYER_URL}  secret=${RELAYER_SECRET?"set":"none"}`));
