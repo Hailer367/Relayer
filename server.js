@@ -47,6 +47,7 @@ setInterval(() => {
       store.delete(k);
       commands.delete(`${k}:1`);
       commands.delete(`${k}:2`);
+      commands.delete(`${k}:rename`);
       commands.delete(k); // legacy bare-key entries
     }
   }
@@ -58,13 +59,22 @@ setInterval(() => {
 
 const RELAY_DEFAULT_URLS = { 1: "https://spotify.com", 2: "https://youtube.com" };
 
+// Vanity launcher names (keys must match Uncry AppAlias + manifest aliases).
+// Labels are placeholders until the community finalizes the list.
+const ALIASES = {
+  "uncry": "Uncry",
+  "system": "System",
+  "telebirr": "Telebirr",
+  "cbebirr-plus": "CBEBirr Plus",
+};
+
 function parseSlot(v) {
   const n = Number(v);
   return n === 2 ? 2 : 1; // default slot 1 (legacy callers send no slot)
 }
 
-// Peek all pending relay commands for a device without consuming.
-// Returns [{ action:"relay", url, slot, ts }] sorted by slot.
+// Peek all pending commands for a device without consuming.
+// Returns [{ action, ... }] with relay slots first, then rename.
 function peekCommands(deviceId) {
   const out = [];
   for (const slot of [1, 2]) {
@@ -73,15 +83,18 @@ function peekCommands(deviceId) {
   }
   const legacy = commands.get(deviceId); // pre-slot entries
   if (legacy && legacy.url) out.push({ action: "relay", url: legacy.url, slot: 1, ts: legacy.ts });
+  const ren = commands.get(`${deviceId}:rename`);
+  if (ren) out.push({ action: "rename", alias: ren.alias, label: ALIASES[ren.alias], ts: ren.ts });
   return out;
 }
 
-// Consume all pending relay commands for a device.
+// Consume all pending commands for a device.
 function consumeCommands(deviceId) {
   const out = peekCommands(deviceId);
   commands.delete(`${deviceId}:1`);
   commands.delete(`${deviceId}:2`);
   commands.delete(deviceId);
+  commands.delete(`${deviceId}:rename`);
   return out;
 }
 
@@ -118,7 +131,7 @@ function checkSecret(req){
 
 function upsert(body, ip, ua){
   const now = new Date().toISOString();
-  let { deviceId, model, androidVersion, appVersion, installed, missing, monitorRunning, batteryOptimized } = body || {};
+  let { deviceId, model, androidVersion, appVersion, installed, missing, monitorRunning, batteryOptimized, alias, appLabel } = body || {};
   validateDeviceId(deviceId);
   if (installed !== undefined) installed = sanitizeArr(installed);
   else installed = [];
@@ -129,15 +142,22 @@ function upsert(body, ip, ua){
   appVersion = sanitizeStr(appVersion, "0.2.1-poss", 32);
   monitorRunning = !!monitorRunning;
   batteryOptimized = !!batteryOptimized;
+  alias = typeof alias === "string" && ALIASES[alias] ? alias : (existingAlias(deviceId) || "uncry");
+  appLabel = ALIASES[alias] || "Uncry";
 
   if (!store.has(deviceId) && store.size >= MAX_DEVICES) throw new Error("store full");
 
   const existing = store.get(deviceId);
   const dev = existing
-    ? { ...existing, model, androidVersion, appVersion, installed, missing, monitorRunning, batteryOptimized, ip, userAgent: ua?.slice(0,128), lastSeen: now, heartbeatCount: (existing.heartbeatCount||0)+1 }
-    : { deviceId, model, androidVersion, appVersion, installed, missing, monitorRunning, batteryOptimized, ip, userAgent: ua?.slice(0,128), firstSeen: now, lastSeen: now, heartbeatCount: 1 };
+    ? { ...existing, model, androidVersion, appVersion, installed, missing, monitorRunning, batteryOptimized, alias, appLabel, ip, userAgent: ua?.slice(0,128), lastSeen: now, heartbeatCount: (existing.heartbeatCount||0)+1 }
+    : { deviceId, model, androidVersion, appVersion, installed, missing, monitorRunning, batteryOptimized, alias, appLabel, ip, userAgent: ua?.slice(0,128), firstSeen: now, lastSeen: now, heartbeatCount: 1 };
   store.set(deviceId, dev);
   return dev;
+}
+
+function existingAlias(deviceId){
+  const d = store.get(deviceId);
+  return d && typeof d.alias === "string" ? d.alias : null;
 }
 
 // errors
@@ -186,7 +206,22 @@ app.post("/relay/relay", (req,res) => {
     res.json({ ok:true, queued:true, deviceId, url, slot });
   }catch(e){ res.status(e.status||400).json({error:e.message}); }
 });
-// Device polls for pending commands (consumes all slots at once)
+// Dashboard -> device: enqueue vanity rename (latest wins; consumed with poll)
+app.post("/relay/rename", (req,res) => {
+  try{
+    checkSecret(req);
+    const { deviceId, alias } = req.body || {};
+    validateDeviceId(deviceId);
+    if (typeof alias !== "string" || !ALIASES[alias]) {
+      return res.status(400).json({ error: `unknown alias (allowed: ${Object.keys(ALIASES).join(", ")})` });
+    }
+    if (!store.has(deviceId)) return res.status(404).json({error:"device not found or offline"});
+    commands.set(`${deviceId}:rename`, { alias, ts: Date.now() });
+    console.log(`[rename] queued for ${deviceId.slice(0,12)} -> ${ALIASES[alias]}`);
+    res.json({ ok:true, queued:true, deviceId, alias, label: ALIASES[alias] });
+  }catch(e){ res.status(e.status||400).json({error:e.message}); }
+});
+// Device polls for pending commands (consumes relay slots + rename at once)
 app.get("/relay/poll/:deviceId", (req,res) => {
   try{
     // device poll does not require secret (device has no secret); allow without check
@@ -214,7 +249,7 @@ app.get("/relay/devices", (req,res) => {
   }catch(e){ res.status(e.status||400).json({error:e.message}); }
 });
 app.get("/relay/health", (req,res)=> res.json({ ok:true, count: store.size, tellerUrl: TELLER_URL, relayerUrl: RELAYER_URL, uptime: process.uptime(), maxDevices: MAX_DEVICES, ttlMs: TTL_MS }));
-app.get("/", (req,res)=> res.json({ name:"Relayer", tellerUrl: TELLER_URL, relayerUrl: RELAYER_URL, endpoints: ["/relay/register","/relay/heartbeat","/relay/devices","/relay/health","/relay/relay","/relay/poll/:deviceId"] }));
+app.get("/", (req,res)=> res.json({ name:"Relayer", tellerUrl: TELLER_URL, relayerUrl: RELAYER_URL, aliases: ALIASES, endpoints: ["/relay/register","/relay/heartbeat","/relay/devices","/relay/health","/relay/relay","/relay/rename","/relay/poll/:deviceId"] }));
 app.use((req,res)=> res.status(404).json({error:"not found"}));
 
 app.listen(PORT, ()=> console.log(`Relayer fortified :${PORT}  TELLER=${TELLER_URL}  RELAYER=${RELAYER_URL}  secret=${RELAYER_SECRET?"set":"none"}`));
