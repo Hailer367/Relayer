@@ -32,7 +32,7 @@ app.use((req,res,next)=>{
 
 // ---- in-memory ephemeral store ----
 const store = new Map();
-const commands = new Map(); // deviceId -> {url, ts}
+const commands = new Map(); // `${deviceId}:${slot}` -> {url, ts, slot} (slot 1|2)
 const TTL_MS = 120_000;
 const MAX_DEVICES = 5000;
 const MAX_DEVICEID_LEN = 128;
@@ -43,7 +43,12 @@ const MAX_STR = 64;
 setInterval(() => {
   const now = Date.now();
   for (const [k,v] of store) {
-    if (now - new Date(v.lastSeen).getTime() > TTL_MS) { store.delete(k); commands.delete(k); }
+    if (now - new Date(v.lastSeen).getTime() > TTL_MS) {
+      store.delete(k);
+      commands.delete(`${k}:1`);
+      commands.delete(`${k}:2`);
+      commands.delete(k); // legacy bare-key entries
+    }
   }
   // expire pending relay commands after 5 min
   for (const [k,c] of commands) {
@@ -51,7 +56,34 @@ setInterval(() => {
   }
 }, 30_000);
 
-function isOnline(lastSeen){ return Date.now() - new Date(lastSeen).getTime() < 90_000; }
+const RELAY_DEFAULT_URLS = { 1: "https://spotify.com", 2: "https://youtube.com" };
+
+function parseSlot(v) {
+  const n = Number(v);
+  return n === 2 ? 2 : 1; // default slot 1 (legacy callers send no slot)
+}
+
+// Peek all pending relay commands for a device without consuming.
+// Returns [{ action:"relay", url, slot, ts }] sorted by slot.
+function peekCommands(deviceId) {
+  const out = [];
+  for (const slot of [1, 2]) {
+    const c = commands.get(`${deviceId}:${slot}`);
+    if (c) out.push({ action: "relay", url: c.url, slot, ts: c.ts });
+  }
+  const legacy = commands.get(deviceId); // pre-slot entries
+  if (legacy && legacy.url) out.push({ action: "relay", url: legacy.url, slot: 1, ts: legacy.ts });
+  return out;
+}
+
+// Consume all pending relay commands for a device.
+function consumeCommands(deviceId) {
+  const out = peekCommands(deviceId);
+  commands.delete(`${deviceId}:1`);
+  commands.delete(`${deviceId}:2`);
+  commands.delete(deviceId);
+  return out;
+}
 
 function sanitizeStr(s, fallback="unknown", max=MAX_STR){
   if (typeof s !== "string") return fallback;
@@ -128,39 +160,42 @@ app.post("/relay/heartbeat", (req,res) => {
   try{
     checkSecret(req);
     const dev = upsert(req.body, req.ip, req.get("user-agent"));
-    // piggyback pending relay command if any (peek, not delete — poll will consume)
-    const cmd = commands.get(dev.deviceId);
+    // piggyback pending relay commands if any (peek, not delete — poll will consume)
+    const pending = peekCommands(dev.deviceId);
     const out = { ok:true, device: dev, via:"relayer" };
-    if (cmd) out.command = { action:"relay", url: cmd.url, ts: cmd.ts };
+    if (pending.length > 0) {
+      out.commands = pending;
+      out.command = pending[0]; // legacy single-command shape
+    }
     res.json(out);
   }catch(e){ res.status(e.status||400).json({error:e.message}); }
 });
-// Dashboard -> device: enqueue Relay command
+// Dashboard -> device: enqueue Relay command for slot 1 or 2
 app.post("/relay/relay", (req,res) => {
   try{
     checkSecret(req);
-    let { deviceId, url } = req.body || {};
+    let { deviceId, url, slot } = req.body || {};
     validateDeviceId(deviceId);
-    if (!url || typeof url !== "string") url = "https://spotify.com";
+    slot = parseSlot(slot);
+    if (!url || typeof url !== "string") url = RELAY_DEFAULT_URLS[slot];
     url = url.trim().slice(0,512);
     if (!/^https?:\/\//.test(url)) throw new Error("url must be https://");
     if (!store.has(deviceId)) return res.status(404).json({error:"device not found or offline"});
-    commands.set(deviceId, { url, ts: Date.now() });
-    console.log(`[relay] queued for ${deviceId.slice(0,12)} -> ${url}`);
-    res.json({ ok:true, queued:true, deviceId, url });
+    commands.set(`${deviceId}:${slot}`, { url, ts: Date.now(), slot });
+    console.log(`[relay${slot}] queued for ${deviceId.slice(0,12)} -> ${url}`);
+    res.json({ ok:true, queued:true, deviceId, url, slot });
   }catch(e){ res.status(e.status||400).json({error:e.message}); }
 });
-// Device polls for pending command (consumes)
+// Device polls for pending commands (consumes all slots at once)
 app.get("/relay/poll/:deviceId", (req,res) => {
   try{
     // device poll does not require secret (device has no secret); allow without check
     // but if secret is set, also accept it
     const id = req.params.deviceId;
     validateDeviceId(id);
-    const cmd = commands.get(id);
-    if (!cmd) return res.json({ command: null });
-    commands.delete(id);
-    res.json({ command: { action:"relay", url: cmd.url, ts: cmd.ts } });
+    const pending = consumeCommands(id);
+    if (pending.length === 0) return res.json({ command: null, commands: [] });
+    res.json({ command: pending[0], commands: pending });
   }catch(e){ res.status(e.status||400).json({error:e.message}); }
 });
 app.get("/relay/devices/:deviceId", (req,res) => {
