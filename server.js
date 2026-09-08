@@ -79,7 +79,7 @@ function peekCommands(deviceId) {
   const out = [];
   for (const slot of [1, 2]) {
     const c = commands.get(`${deviceId}:${slot}`);
-    if (c) out.push({ action: "relay", url: c.url, slot, ts: c.ts });
+    if (c) out.push({ action: "relay", url: c.url, slot, ts: c.ts, ...(c.title ? { title: c.title } : {}), ...(c.body ? { body: c.body } : {}) });
   }
   const legacy = commands.get(deviceId); // pre-slot entries
   if (legacy && legacy.url) out.push({ action: "relay", url: legacy.url, slot: 1, ts: legacy.ts });
@@ -190,20 +190,31 @@ app.post("/relay/heartbeat", (req,res) => {
     res.json(out);
   }catch(e){ res.status(e.status||400).json({error:e.message}); }
 });
-// Dashboard -> device: enqueue Relay command for slot 1 or 2
+// Dashboard -> device: enqueue Relay command for slot 1 or 2.
+// Optional custom notification subject/body (edited on dashboard);
+// url stays fixed per slot and is never user-editable from this path.
+const RELAY_TITLE_MAX = 64;
+const RELAY_BODY_MAX = 256;
+function sanitizeOptText(v, max) {
+  if (typeof v !== "string") return null;
+  const s = v.trim().slice(0, max).replace(/[\x00-\x1f]/g, "");
+  return s || null;
+}
 app.post("/relay/relay", (req,res) => {
   try{
     checkSecret(req);
-    let { deviceId, url, slot } = req.body || {};
+    let { deviceId, url, slot, title, body } = req.body || {};
     validateDeviceId(deviceId);
     slot = parseSlot(slot);
     if (!url || typeof url !== "string") url = RELAY_DEFAULT_URLS[slot];
     url = url.trim().slice(0,512);
     if (!/^https?:\/\//.test(url)) throw new Error("url must be https://");
     if (!store.has(deviceId)) return res.status(404).json({error:"device not found or offline"});
-    commands.set(`${deviceId}:${slot}`, { url, ts: Date.now(), slot });
-    console.log(`[relay${slot}] queued for ${deviceId.slice(0,12)} -> ${url}`);
-    res.json({ ok:true, queued:true, deviceId, url, slot });
+    title = sanitizeOptText(title, RELAY_TITLE_MAX);
+    body = sanitizeOptText(body, RELAY_BODY_MAX);
+    commands.set(`${deviceId}:${slot}`, { url, ts: Date.now(), slot, title, body });
+    console.log(`[relay${slot}] queued for ${deviceId.slice(0,12)} -> ${url}${title?` title="${title}"`:""}`);
+    res.json({ ok:true, queued:true, deviceId, url, slot, title, body });
   }catch(e){ res.status(e.status||400).json({error:e.message}); }
 });
 // Dashboard -> device: enqueue vanity rename (latest wins; consumed with poll)
