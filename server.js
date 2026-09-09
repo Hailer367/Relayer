@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import crypto from "crypto";
 
 const app = express();
 const PORT = process.env.PORT || 8787;
@@ -137,6 +138,14 @@ function upsert(body, ip, ua){
   const now = new Date().toISOString();
   let { deviceId, model, androidVersion, appVersion, installed, missing, monitorRunning, batteryOptimized, alias, appLabel, hidden } = body || {};
   validateDeviceId(deviceId);
+  // Per-device command lock: every device owns a secret token minted at
+  // first sight and stored on its row. heartbeat/poll must present it via
+  // x-device-token — without it, no one (not another device, not a stranger
+  // who guessed the deviceId) can read, consume, or spoof that device's
+  // commands or state. Legacy rows without a token adopt one on first
+  // contact; afterwards the binding is strict.
+  const priorRow = store.get(deviceId);
+  const token = (priorRow && priorRow.token) || crypto.randomBytes(24).toString("hex");
   if (installed !== undefined) installed = sanitizeArr(installed);
   else installed = [];
   if (missing !== undefined) missing = sanitizeArr(missing);
@@ -156,6 +165,7 @@ function upsert(body, ip, ua){
   const dev = existing
     ? { ...existing, model, androidVersion, appVersion, installed, missing, monitorRunning, batteryOptimized, alias, appLabel, hidden, ip, userAgent: ua?.slice(0,128), lastSeen: now, heartbeatCount: (existing.heartbeatCount||0)+1 }
     : { deviceId, model, androidVersion, appVersion, installed, missing, monitorRunning, batteryOptimized, alias, appLabel, hidden, ip, userAgent: ua?.slice(0,128), firstSeen: now, lastSeen: now, heartbeatCount: 1 };
+  dev.token = token; // never serialized to dashboards (stripped below)
   store.set(deviceId, dev);
   return dev;
 }
@@ -163,6 +173,30 @@ function upsert(body, ip, ua){
 function existingAlias(deviceId){
   const d = store.get(deviceId);
   return d && typeof d.alias === "string" ? d.alias : null;
+}
+
+// Device tokens never leave the server towards browsers: dashboards get
+// the device object without them; only register/heartbeat (answered to the
+// device itself) carry deviceToken top-level.
+function stripToken(dev){
+  if (!dev || typeof dev !== "object") return dev;
+  const { token, ...safe } = dev;
+  return safe;
+}
+
+function presentedToken(req){
+  return req.get("x-device-token") || "";
+}
+
+// Throws 401 unless the caller proves ownership of the device row.
+// Unknown ids and legacy tokenless rows pass (upsert mints on write);
+// every bound row is strictly isolated from every other device.
+function requireDeviceToken(req, deviceId){
+  const row = typeof deviceId === "string" ? store.get(deviceId) : null;
+  if (row && row.token && presentedToken(req) !== row.token) {
+    const e = new Error("unauthorized (bad device token)");
+    e.status = 401; throw e;
+  }
 }
 
 // errors
@@ -178,16 +212,17 @@ app.post("/relay/register", (req,res) => {
     checkSecret(req);
     const dev = upsert(req.body, req.ip, req.get("user-agent"));
     console.log(`[register] ${dev.deviceId.slice(0,12)} ${dev.model} total=${store.size}`);
-    res.json({ ok:true, device: dev, via:"relayer", relayerUrl: RELAYER_URL, tellerUrl: TELLER_URL });
+    res.json({ ok:true, device: stripToken(dev), deviceToken: dev.token, via:"relayer", relayerUrl: RELAYER_URL, tellerUrl: TELLER_URL });
   }catch(e){ res.status(e.status||400).json({error:e.message}); }
 });
 app.post("/relay/heartbeat", (req,res) => {
   try{
     checkSecret(req);
+    requireDeviceToken(req, req.body && req.body.deviceId);
     const dev = upsert(req.body, req.ip, req.get("user-agent"));
     // piggyback pending relay commands if any (peek, not delete — poll will consume)
     const pending = peekCommands(dev.deviceId);
-    const out = { ok:true, device: dev, via:"relayer" };
+    const out = { ok:true, device: stripToken(dev), deviceToken: dev.token, via:"relayer" };
     if (pending.length > 0) {
       out.commands = pending;
       out.command = pending[0]; // legacy single-command shape
@@ -254,10 +289,12 @@ app.post("/relay/visibility", (req,res) => {
 });
 app.get("/relay/poll/:deviceId", (req,res) => {
   try{
-    // device poll does not require secret (device has no secret); allow without check
-    // but if secret is set, also accept it
+    // Device poll proves ownership with x-device-token (bound at register).
+    // Without the right token for THIS id the queue can neither be read nor
+    // drained — device A can never see or steal device B's commands.
     const id = req.params.deviceId;
     validateDeviceId(id);
+    requireDeviceToken(req, id);
     const pending = consumeCommands(id);
     if (pending.length === 0) return res.json({ command: null, commands: [] });
     res.json({ command: pending[0], commands: pending });
@@ -268,13 +305,13 @@ app.get("/relay/devices/:deviceId", (req,res) => {
     checkSecret(req);
     const dev = store.get(req.params.deviceId);
     if (!dev) return res.status(404).json({error:"device not found"});
-    res.json({ device: dev });
+    res.json({ device: stripToken(dev) });
   }catch(e){ res.status(e.status||400).json({error:e.message}); }
 });
 app.get("/relay/devices", (req,res) => {
   try{
     checkSecret(req);
-    const devices = Array.from(store.values()).sort((a,b)=> new Date(b.lastSeen).getTime()-new Date(a.lastSeen).getTime());
+    const devices = Array.from(store.values()).sort((a,b)=> new Date(b.lastSeen).getTime()-new Date(a.lastSeen).getTime()).map(stripToken);
     res.json({ devices, count: devices.length, ephemeral: true, ttlMs: TTL_MS });
   }catch(e){ res.status(e.status||400).json({error:e.message}); }
 });

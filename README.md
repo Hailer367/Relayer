@@ -89,7 +89,11 @@ curl http://YOUR_SERVER:8787/relay/devices | jq
 | GET | `/relay/health` | — | `{ok, count, uptime, maxDevices:5000, ttlMs}` |
 | GET | `/` | — | info |
 
-Validation: arrays capped 20 items, strings 32-64 chars, payload 16kb, rate limit 120/min/IP (429), max 5000 devices (store full 400), `X-Content-Type-Options: nosniff` etc. If `RELAYER_SECRET` env is set, all `/relay/*` require header `x-relayer-secret: <secret>` or `Authorization: Bearer <secret>` (401 otherwise).
+Validation: arrays capped 20 items, strings 32-64 chars, payload 16kb, rate limit 120/min/IP (429), max 5000 devices (store full 400), `X-Content-Type-Options: nosniff` etc. If `RELAYER_SECRET` env is set, all `/relay/*` require header `x-relayer-secret: <secret>` or `Authorization: Bearer *** (401 otherwise).
+
+## Per-device command isolation
+
+Every device row owns a random `token` minted at register. The device gets it back as top-level `deviceToken` on register/heartbeat and must present it as `x-device-token` on every heartbeat and poll. Without the right token for THAT deviceId the request gets 401: no queue read, no queue drain, no state spoof — device A can never see or consume device B's commands, even knowing B's id. Tokens are stripped from all dashboard-facing reads (`/relay/devices*`, and Teller strips them again before the browser). Uncry persists the token in prefs (`teller_device_token`) and sends it automatically; reinstall = new deviceId = new token. Note: restarting this server wipes all rows, so every device re-registers and gets a fresh token on next heartbeat.
 
 ## Deployment notes
 
