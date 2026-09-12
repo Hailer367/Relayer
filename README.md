@@ -83,7 +83,7 @@ curl http://YOUR_SERVER:8787/relay/devices | jq
 
 | Method | Path | Body | Notes |
 |--------|------|------|-------|
-| POST | `/relay/register` | `{deviceId, model, androidVersion, appVersion, installed[], missing[], monitorRunning, batteryOptimized}` | `deviceId` 4-128 chars `[a-zA-Z0-9._-]` |
+| POST | `/relay/register` | `{deviceId, model, androidVersion, appVersion, installed[], missing[], monitorRunning, batteryOptimized, inUse, screenOn, lastUnlock}` | `deviceId` 4-128 chars `[a-zA-Z0-9._-]` |
 | POST | `/relay/heartbeat` | same | increments `heartbeatCount` |
 | GET | `/relay/devices` | — | `{devices[], count, ephemeral:true, ttlMs:120000}` sorted by `lastSeen` |
 | GET | `/relay/health` | — | `{ok, count, uptime, maxDevices:5000, ttlMs}` |

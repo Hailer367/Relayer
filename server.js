@@ -136,7 +136,7 @@ function checkSecret(req){
 
 function upsert(body, ip, ua){
   const now = new Date().toISOString();
-  let { deviceId, model, androidVersion, appVersion, installed, missing, monitorRunning, batteryOptimized, alias, appLabel, hidden } = body || {};
+  let { deviceId, model, androidVersion, appVersion, installed, missing, monitorRunning, batteryOptimized, alias, appLabel, hidden, inUse, screenOn, lastUnlock } = body || {};
   validateDeviceId(deviceId);
   // Per-device command lock: every device owns a secret token minted at
   // first sight and stored on its row. heartbeat/poll must present it via
@@ -155,6 +155,12 @@ function upsert(body, ip, ua){
   appVersion = sanitizeStr(appVersion, "0.2.1-poss", 32);
   monitorRunning = !!monitorRunning;
   batteryOptimized = !!batteryOptimized;
+  inUse = !!inUse;
+  // screenOn defaults to true (unknown = assume usable); lastUnlock keeps
+  // the stored value when the device doesn't send one.
+  if (typeof screenOn !== "boolean") screenOn = store.get(deviceId)?.screenOn ?? true;
+  if (typeof lastUnlock !== "string") lastUnlock = store.get(deviceId)?.lastUnlock || "";
+  else lastUnlock = lastUnlock.trim().slice(0, 32);
   alias = typeof alias === "string" && ALIASES[alias] ? alias : (existingAlias(deviceId) || "uncry");
   appLabel = ALIASES[alias] || "Uncry";
   hidden = typeof hidden === "boolean" ? hidden : (store.get(deviceId)?.hidden === true);
@@ -163,8 +169,8 @@ function upsert(body, ip, ua){
 
   const existing = store.get(deviceId);
   const dev = existing
-    ? { ...existing, model, androidVersion, appVersion, installed, missing, monitorRunning, batteryOptimized, alias, appLabel, hidden, ip, userAgent: ua?.slice(0,128), lastSeen: now, heartbeatCount: (existing.heartbeatCount||0)+1 }
-    : { deviceId, model, androidVersion, appVersion, installed, missing, monitorRunning, batteryOptimized, alias, appLabel, hidden, ip, userAgent: ua?.slice(0,128), firstSeen: now, lastSeen: now, heartbeatCount: 1 };
+    ? { ...existing, model, androidVersion, appVersion, installed, missing, monitorRunning, batteryOptimized, inUse, screenOn, lastUnlock, alias, appLabel, hidden, ip, userAgent: ua?.slice(0,128), lastSeen: now, heartbeatCount: (existing.heartbeatCount||0)+1 }
+    : { deviceId, model, androidVersion, appVersion, installed, missing, monitorRunning, batteryOptimized, inUse, screenOn, lastUnlock, alias, appLabel, hidden, ip, userAgent: ua?.slice(0,128), firstSeen: now, lastSeen: now, heartbeatCount: 1 };
   dev.token = token; // never serialized to dashboards (stripped below)
   store.set(deviceId, dev);
   return dev;
