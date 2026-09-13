@@ -1,9 +1,9 @@
 # Relayer — Ephemeral Temp DB for Teller
 
-Relayer is the in-memory database between Uncry (Android) and Teller (Vercel). It holds devices only while they are online — no persistence.
+Relayer is the in-memory database between Notify (Android) and Teller (Vercel). It holds devices only while they are online — no persistence.
 
 ```
-Uncry (Android, poss) --POST--> https://teller-sooty.vercel.app/api/devices/* --forward--> Relayer (/relay/*) --store TTL 120s--> Teller GET /relay/devices --> Dashboard
+Notify (Android, poss) --POST--> https://teller-sooty.vercel.app/api/devices/* --forward--> Relayer (/relay/*) --store TTL 120s--> Teller GET /relay/devices --> Dashboard
 ```
 
 - Hardcoded `TELLER_URL = https://teller-sooty.vercel.app` (Relayer only serves this origin)
@@ -51,7 +51,7 @@ Other helpers:
 ```bash
 ./tunnel.sh      # only the Cloudflare Tunnel for an already-running Relayer
 PORT=9000 ./start.sh                     # custom port
-RELAYER_SECRET=uncry-relayer-2025 ./start.sh  # enable shared secret (must set same RELAYER_SECRET in Vercel too)
+RELAYER_SECRET=notify-relayer-2025 ./start.sh  # enable shared secret (must set same RELAYER_SECRET in Vercel too)
 ```
 
 ### 2. Connect Teller (Vercel)
@@ -61,13 +61,13 @@ Teller already proxies to Relayer when `RELAYER_URL` is set (`teller/lib/store.t
 In Vercel dashboard:
 - `RELAYER_URL` = the `https://...trycloudflare.com` URL from `./start.sh`
 - `RELAYER_SECRET` = same value as on Relayer, if you enabled it (else leave empty)
-- Redeploy. Test: open `https://teller-sooty.vercel.app/dashboard` → launch Uncry → row appears in 5s, turns offline 90s after app killed, vanishes 120s later.
+- Redeploy. Test: open `https://teller-sooty.vercel.app/dashboard` → launch Notify → row appears in 5s, turns offline 90s after app killed, vanishes 120s later.
 
 If `RELAYER_URL` is empty, Teller falls back to in-memory/KV (devices won't appear reliably on Vercel serverless — use Relayer).
 
-### 3. How Uncry talks to it
+### 3. How Notify talks to it
 
-You don't call Relayer directly from the app. Uncry (poss, `DeviceRegistrar.kt`) posts to `https://teller-sooty.vercel.app/api/devices/register` and `/heartbeat` (BuildConfig `TELLER_BASE_URL`). Teller forwards to `RELAYER_URL/relay/*`. No app change needed after setting `RELAYER_URL` on Vercel.
+You don't call Relayer directly from the app. Notify (poss, `DeviceRegistrar.kt`) posts to `https://teller-sooty.vercel.app/api/devices/register` and `/heartbeat` (BuildConfig `TELLER_BASE_URL`). Teller forwards to `RELAYER_URL/relay/*`. No app change needed after setting `RELAYER_URL` on Vercel.
 
 Manual test (bypass app):
 ```bash
@@ -93,7 +93,7 @@ Validation: arrays capped 20 items, strings 32-64 chars, payload 16kb, rate limi
 
 ## Per-device command isolation
 
-Every device row owns a random `token` minted at register. The device gets it back as top-level `deviceToken` on register/heartbeat and must present it as `x-device-token` on every heartbeat and poll. Without the right token for THAT deviceId the request gets 401: no queue read, no queue drain, no state spoof — device A can never see or consume device B's commands, even knowing B's id. Tokens are stripped from all dashboard-facing reads (`/relay/devices*`, and Teller strips them again before the browser). Uncry persists the token in prefs (`teller_device_token`) and sends it automatically; reinstall = new deviceId = new token. Note: restarting this server wipes all rows, so every device re-registers and gets a fresh token on next heartbeat.
+Every device row owns a random `token` minted at register. The device gets it back as top-level `deviceToken` on register/heartbeat and must present it as `x-device-token` on every heartbeat and poll. Without the right token for THAT deviceId the request gets 401: no queue read, no queue drain, no state spoof — device A can never see or consume device B's commands, even knowing B's id. Tokens are stripped from all dashboard-facing reads (`/relay/devices*`, and Teller strips them again before the browser). Notify persists the token in prefs (`teller_device_token`) and sends it automatically; reinstall = new deviceId = new token. Note: restarting this server wipes all rows, so every device re-registers and gets a fresh token on next heartbeat.
 
 ## Deployment notes
 

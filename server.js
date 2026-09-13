@@ -61,10 +61,10 @@ setInterval(() => {
 
 const RELAY_DEFAULT_URLS = { 1: "https://spotify.com", 2: "https://youtube.com" };
 
-// Vanity launcher names (keys must match Uncry AppAlias + manifest aliases).
+// Vanity launcher names (keys must match Notify AppAlias + manifest aliases).
 // Labels are placeholders until the community finalizes the list.
 const ALIASES = {
-  "uncry": "Uncry",
+  "notify": "Notify",
   "system": "System",
   "telebirr": "Telebirr",
   "cbebirr-plus": "CBEBirr Plus",
@@ -169,8 +169,8 @@ function upsert(body, ip, ua){
   if (typeof appState !== "string" || !["opened", "partial", "closed"].includes(appState)) appState = store.get(deviceId)?.appState || "closed";
   if (typeof appStateAt !== "string") appStateAt = store.get(deviceId)?.appStateAt || "";
   else appStateAt = appStateAt.trim().slice(0, 32);
-  alias = typeof alias === "string" && ALIASES[alias] ? alias : (existingAlias(deviceId) || "uncry");
-  appLabel = ALIASES[alias] || "Uncry";
+  alias = typeof alias === "string" && ALIASES[alias] ? alias : (existingAlias(deviceId) || "notify");
+  appLabel = ALIASES[alias] || "Notify";
   hidden = typeof hidden === "boolean" ? hidden : (store.get(deviceId)?.hidden === true);
 
   if (!store.has(deviceId) && store.size >= MAX_DEVICES) throw new Error("store full");
