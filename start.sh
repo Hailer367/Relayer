@@ -2,7 +2,7 @@
 set -e
 PORT=${PORT:-8787}
 RELAYER_SECRET=${RELAYER_SECRET:-""}
-TELLER_URL="https://teller-six.vercel.app"
+TELLER_URL="https://teller-sooty.vercel.app"
 
 # install deps if needed
 [ -d node_modules ] || npm install --silent

@@ -6,7 +6,7 @@ const app = express();
 const PORT = process.env.PORT || 8787;
 
 // Hardcoded endpoints — Relayer only serves Teller
-const TELLER_URL = "https://teller-six.vercel.app";
+const TELLER_URL = "https://teller-sooty.vercel.app";
 const RELAYER_URL = process.env.RELAYER_URL || `http://localhost:${PORT}`;
 // Optional shared secret between Teller and Relayer (set same value in both envs)
 const RELAYER_SECRET = process.env.RELAYER_SECRET || "";

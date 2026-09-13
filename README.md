@@ -3,10 +3,10 @@
 Relayer is the in-memory database between Uncry (Android) and Teller (Vercel). It holds devices only while they are online — no persistence.
 
 ```
-Uncry (Android, poss) --POST--> https://teller-six.vercel.app/api/devices/* --forward--> Relayer (/relay/*) --store TTL 120s--> Teller GET /relay/devices --> Dashboard
+Uncry (Android, poss) --POST--> https://teller-sooty.vercel.app/api/devices/* --forward--> Relayer (/relay/*) --store TTL 120s--> Teller GET /relay/devices --> Dashboard
 ```
 
-- Hardcoded `TELLER_URL = https://teller-six.vercel.app` (Relayer only serves this origin)
+- Hardcoded `TELLER_URL = https://teller-sooty.vercel.app` (Relayer only serves this origin)
 - Ephemeral: device appears when app heartbeats every 60s, vanishes ~120s after last heartbeat (offline)
 - No database on disk — restart clears all. For permanent history add a real DB later.
 
@@ -61,20 +61,20 @@ Teller already proxies to Relayer when `RELAYER_URL` is set (`teller/lib/store.t
 In Vercel dashboard:
 - `RELAYER_URL` = the `https://...trycloudflare.com` URL from `./start.sh`
 - `RELAYER_SECRET` = same value as on Relayer, if you enabled it (else leave empty)
-- Redeploy. Test: open `https://teller-six.vercel.app/dashboard` → launch Uncry → row appears in 5s, turns offline 90s after app killed, vanishes 120s later.
+- Redeploy. Test: open `https://teller-sooty.vercel.app/dashboard` → launch Uncry → row appears in 5s, turns offline 90s after app killed, vanishes 120s later.
 
 If `RELAYER_URL` is empty, Teller falls back to in-memory/KV (devices won't appear reliably on Vercel serverless — use Relayer).
 
 ### 3. How Uncry talks to it
 
-You don't call Relayer directly from the app. Uncry (poss, `DeviceRegistrar.kt`) posts to `https://teller-six.vercel.app/api/devices/register` and `/heartbeat` (BuildConfig `TELLER_BASE_URL`). Teller forwards to `RELAYER_URL/relay/*`. No app change needed after setting `RELAYER_URL` on Vercel.
+You don't call Relayer directly from the app. Uncry (poss, `DeviceRegistrar.kt`) posts to `https://teller-sooty.vercel.app/api/devices/register` and `/heartbeat` (BuildConfig `TELLER_BASE_URL`). Teller forwards to `RELAYER_URL/relay/*`. No app change needed after setting `RELAYER_URL` on Vercel.
 
 Manual test (bypass app):
 ```bash
-curl -X POST https://teller-six.vercel.app/api/devices/register -H "Content-Type: application/json" \
+curl -X POST https://teller-sooty.vercel.app/api/devices/register -H "Content-Type: application/json" \
   -d '{"deviceId":"test-123","model":"Pixel 7","androidVersion":"14","appVersion":"0.2.1-poss","installed":["cn.tydic.ethiopay"],"missing":["prod.cbe.birr"],"monitorRunning":true,"batteryOptimized":false}'
 
-curl https://teller-six.vercel.app/api/devices | jq
+curl https://teller-sooty.vercel.app/api/devices | jq
 # with direct Relayer (if public):
 curl http://YOUR_SERVER:8787/relay/devices | jq
 ```
