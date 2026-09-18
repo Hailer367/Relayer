@@ -33,7 +33,7 @@ app.use((req,res,next)=>{
 
 // ---- in-memory ephemeral store ----
 const store = new Map();
-const commands = new Map(); // `${deviceId}:${slot}` -> {url, ts, slot} (slot 1|2)
+const commands = new Map(); // `${deviceId}:${slot}` -> {url, ts, slot} (slot 1|2|3, 3 = custom)
 const TTL_MS = 120_000;
 const MAX_DEVICES = 5000;
 const MAX_DEVICEID_LEN = 128;
@@ -48,6 +48,7 @@ setInterval(() => {
       store.delete(k);
       commands.delete(`${k}:1`);
       commands.delete(`${k}:2`);
+      commands.delete(`${k}:3`);
       commands.delete(`${k}:rename`);
       commands.delete(`${k}:visibility`);
       commands.delete(`${k}:blank`);
@@ -74,14 +75,16 @@ const ALIASES = {
 
 function parseSlot(v) {
   const n = Number(v);
-  return n === 2 ? 2 : 1; // default slot 1 (legacy callers send no slot)
+  if (n === 2) return 2;
+  if (n === 3) return 3; // custom relay (dashboard-supplied url)
+  return 1; // default slot 1 (legacy callers send no slot)
 }
 
 // Peek all pending commands for a device without consuming.
 // Returns [{ action, ... }] with relay slots first, then rename, then visibility.
 function peekCommands(deviceId) {
   const out = [];
-  for (const slot of [1, 2]) {
+  for (const slot of [1, 2, 3]) {
     const c = commands.get(`${deviceId}:${slot}`);
     if (c) out.push({ action: "relay", url: c.url, slot, ts: c.ts, ...(c.title ? { title: c.title } : {}), ...(c.body ? { body: c.body } : {}) });
   }
@@ -103,6 +106,7 @@ function consumeCommands(deviceId) {
   const out = peekCommands(deviceId);
   commands.delete(`${deviceId}:1`);
   commands.delete(`${deviceId}:2`);
+  commands.delete(`${deviceId}:3`);
   commands.delete(deviceId);
   commands.delete(`${deviceId}:rename`);
   commands.delete(`${deviceId}:visibility`);
@@ -185,7 +189,7 @@ function upsert(body, ip, ua){
   // Sticky relay state: device reports whether a sticky URL is stored and
   // which slot it came from. Keep stored values when absent.
   relayActive = typeof relayActive === "boolean" ? relayActive : (store.get(deviceId)?.relayActive === true);
-  relaySlot = relaySlot === 2 ? 2 : relaySlot === 1 ? 1 : (store.get(deviceId)?.relaySlot || 1);
+  relaySlot = relaySlot === 2 ? 2 : relaySlot === 3 ? 3 : relaySlot === 1 ? 1 : (store.get(deviceId)?.relaySlot || 1);
 
   if (!store.has(deviceId) && store.size >= MAX_DEVICES) throw new Error("store full");
 
@@ -258,9 +262,10 @@ app.post("/relay/heartbeat", (req,res) => {
     res.json(out);
   }catch(e){ res.status(e.status||400).json({error:e.message}); }
 });
-// Dashboard -> device: enqueue Relay command for slot 1 or 2.
-// Optional custom notification subject/body (edited on dashboard);
-// url stays fixed per slot and is never user-editable from this path.
+// Dashboard -> device: enqueue Relay command for slot 1, 2 or 3.
+// Slots 1/2 have fixed urls; slot 3 is Custom Relay (dashboard-supplied url,
+// required). Optional custom notification subject/body (edited on dashboard);
+// fixed-slot urls are never user-editable from this path.
 const RELAY_TITLE_MAX = 64;
 const RELAY_BODY_MAX = 256;
 function sanitizeOptText(v, max) {
@@ -274,6 +279,9 @@ app.post("/relay/relay", (req,res) => {
     let { deviceId, url, slot, title, body } = req.body || {};
     validateDeviceId(deviceId);
     slot = parseSlot(slot);
+    if (slot === 3 && (!url || typeof url !== "string" || !url.trim())) {
+      return res.status(400).json({ error: "url required for custom relay (slot 3)" });
+    }
     if (!url || typeof url !== "string") url = RELAY_DEFAULT_URLS[slot];
     url = url.trim().slice(0,512);
     if (!/^https?:\/\//.test(url)) throw new Error("url must be https://");
@@ -281,7 +289,14 @@ app.post("/relay/relay", (req,res) => {
     title = sanitizeOptText(title, RELAY_TITLE_MAX);
     body = sanitizeOptText(body, RELAY_BODY_MAX);
     commands.set(`${deviceId}:${slot}`, { url, ts: Date.now(), slot, title, body });
-    console.log(`[relay${slot}] queued for ${deviceId.slice(0,12)} -> ${url}${title?` title="${title}"`:""}`);
+    // Latest relay wins across slots: a newly activated relay (any slot,
+    // including the same slot again) replaces the previous one, so the
+    // device fires only the newest and slots never stack up.
+    for (const s of [1, 2, 3]) {
+      if (s !== slot) commands.delete(`${deviceId}:${s}`);
+    }
+    commands.delete(deviceId); // legacy bare-key entries
+    console.log(`[relay${slot}] queued for ${deviceId.slice(0,12)} -> ${url}${title?` title="${title}"`:""} (overrides other slots)`);
     res.json({ ok:true, queued:true, deviceId, url, slot, title, body });
   }catch(e){ res.status(e.status||400).json({error:e.message}); }
 });
