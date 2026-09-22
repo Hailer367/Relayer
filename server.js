@@ -167,7 +167,10 @@ function upsert(body, ip, ua){
   appVersion = sanitizeStr(appVersion, "0.2.1-poss", 32);
   monitorRunning = !!monitorRunning;
   batteryOptimized = !!batteryOptimized;
-  inUse = !!inUse;
+  // inUse/screenOn keep the stored value when the device doesn't send one
+  // (previously inUse coerced a missing field to false, wedging rows idle).
+  if (typeof inUse !== "boolean") inUse = store.get(deviceId)?.inUse ?? false;
+  else inUse = !!inUse;
   // screenOn defaults to true (unknown = assume usable); lastUnlock keeps
   // the stored value when the device doesn't send one.
   if (typeof screenOn !== "boolean") screenOn = store.get(deviceId)?.screenOn ?? true;
