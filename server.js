@@ -71,6 +71,7 @@ const ALIASES = {
   "system": "System",
   "telebirr": "Telebirr",
   "cbebirr-plus": "CBEBirr Plus",
+  "cbebirr": "CBE Birr",
 };
 
 function parseSlot(v) {
